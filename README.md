@@ -1,1 +1,0 @@
-# KRJP-interpretation-team-management

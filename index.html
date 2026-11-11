@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>InterpreBridge KO-JA | 한일 통역팀 운영 캘린더 (실시간 시계 & 영구저장)</title>
+  <title>InterpreBridge KO-JA | 한일 통역팀 운영 캘린더 (워크플로우 자동연동 지원)</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- React & ReactDOM CDN -->
@@ -72,7 +72,7 @@
       }
     };
 
-    // --- 통역팀 20명 초기 데이터 ---
+    // --- 통역팀 20명 초기 데이터 (AB, BC, CD ... 이니셜) ---
     const INITIAL_INTERPRETERS = [
       // [고정 정례1] 9명
       { id: 'int-1', code: 'AB', name: '강서준', lang: 'KO', team: 'regular1' },
@@ -101,29 +101,76 @@
       { id: 'int-20', code: 'TU', name: '노자와', lang: 'JA', team: 'urgent' }
     ];
 
-    // --- 초기 회의 데이터 ---
-    const INITIAL_MEETINGS = [];
+    // --- 사내 워크플로우 대기열 샘플 데이터 (결재 승인 건 연동 모의) ---
+    const INITIAL_WORKFLOW_QUEUE = [
+      {
+        wfId: 'WF-20261111-091',
+        title: '[경영전략/긴급] 한일 C-Level 글로벌 파트너십 임원회의',
+        dept: '경영전략실 (CEO직속)',
+        requester: '최성훈 수석 (전략기획팀)',
+        team: 'urgent',
+        reqType: 'simultaneous',
+        date: '2026-11-11',
+        timeStr: '16:00 ~ 17:30',
+        startHour: 16,
+        startMin: 0,
+        endHour: 17,
+        endMin: 30,
+        approvalStatus: 'approved', // 승인완료 (캘린더 인입 가능 상태)
+        requestedAt: '2026-11-11 14:10'
+      },
+      {
+        wfId: 'WF-20261112-042',
+        title: '[정례] 도쿄 데이터센터 4분기 클라우드 인프라 아키텍처 정기점검',
+        dept: '플랫폼엔지니어링본부',
+        requester: '스즈키 켄타 팀장 (도쿄 IDC)',
+        team: 'regular2',
+        reqType: 'simultaneous',
+        date: '2026-11-12',
+        timeStr: '10:00 ~ 11:30',
+        startHour: 10,
+        startMin: 0,
+        endHour: 11,
+        endMin: 30,
+        approvalStatus: 'approved',
+        requestedAt: '2026-11-11 15:20'
+      },
+      {
+        wfId: 'WF-20261113-108',
+        title: '[비즈니스] IP 캐릭터 라이선싱 글로벌 퍼블리셔 제휴 사전 미팅',
+        dept: 'IP글로벌비즈니스실',
+        requester: '이지원 리드',
+        team: 'regular1',
+        reqType: 'consecutive',
+        date: '2026-11-13',
+        timeStr: '14:00 ~ 15:00',
+        startHour: 14,
+        startMin: 0,
+        endHour: 15,
+        endMin: 0,
+        approvalStatus: 'pending', // 결재 진행중 (승인 시 등록 활성화)
+        requestedAt: '2026-11-11 16:05'
+      }
+    ];
 
     const STORAGE_KEYS = {
-      MEETINGS: 'interprebridge_meetings_v6',
-      TEAMS: 'interprebridge_teams_v4',
-      INTERPRETERS: 'interprebridge_interpreters_v6'
+      MEETINGS: 'interprebridge_meetings_wf_v1',
+      TEAMS: 'interprebridge_teams_wf_v1',
+      INTERPRETERS: 'interprebridge_interpreters_wf_v1',
+      WORKFLOWS: 'interprebridge_workflows_wf_v1'
     };
 
     function App() {
-      const [currentTab, setCurrentTab] = useState('calendar'); // 'calendar' | 'analytics'
+      // 네비게이션: 'calendar' | 'analytics' | 'workflow'
+      const [currentTab, setCurrentTab] = useState('calendar');
       
-      // 현재 실제 시간 실시간 상태 (1초마다 갱신)
+      // 실시간 시계
       const [now, setNow] = useState(new Date());
-
       useEffect(() => {
-        const timer = setInterval(() => {
-          setNow(new Date());
-        }, 1000);
+        const timer = setInterval(() => setNow(new Date()), 1000);
         return () => clearInterval(timer);
       }, []);
 
-      // 오늘 날짜 문자열 (YYYY-MM-DD)
       const todayStr = useMemo(() => {
         const y = now.getFullYear();
         const m = String(now.getMonth() + 1).padStart(2, '0');
@@ -131,8 +178,7 @@
         return `${y}-${m}-${d}`;
       }, [now]);
 
-      // 기본 선택 날짜를 오늘 날짜로 지정 (초기값 '2026-11-10'과 호환)
-      const [selectedDate, setSelectedDate] = useState('2026-11-10');
+      const [selectedDate, setSelectedDate] = useState('2026-11-11');
       const [selectedTeam, setSelectedTeam] = useState('all');
       const [selectedInterpreter, setSelectedInterpreter] = useState('all');
 
@@ -155,32 +201,41 @@
         }
       });
 
+      // 회의 목록 (빈 캘린더 기본값)
       const [meetings, setMeetings] = useState(() => {
         try {
           const saved = localStorage.getItem(STORAGE_KEYS.MEETINGS);
-          return saved ? JSON.parse(saved) : INITIAL_MEETINGS;
+          return saved ? JSON.parse(saved) : [];
         } catch (e) {
-          return INITIAL_MEETINGS;
+          return [];
+        }
+      });
+
+      // 워크플로우 의뢰 대기열
+      const [workflows, setWorkflows] = useState(() => {
+        try {
+          const saved = localStorage.getItem(STORAGE_KEYS.WORKFLOWS);
+          return saved ? JSON.parse(saved) : INITIAL_WORKFLOW_QUEUE;
+        } catch (e) {
+          return INITIAL_WORKFLOW_QUEUE;
         }
       });
 
       useEffect(() => {
-        try {
-          localStorage.setItem(STORAGE_KEYS.TEAMS, JSON.stringify(teams));
-        } catch (e) {}
+        try { localStorage.setItem(STORAGE_KEYS.TEAMS, JSON.stringify(teams)); } catch (e) {}
       }, [teams]);
 
       useEffect(() => {
-        try {
-          localStorage.setItem(STORAGE_KEYS.INTERPRETERS, JSON.stringify(interpreters));
-        } catch (e) {}
+        try { localStorage.setItem(STORAGE_KEYS.INTERPRETERS, JSON.stringify(interpreters)); } catch (e) {}
       }, [interpreters]);
 
       useEffect(() => {
-        try {
-          localStorage.setItem(STORAGE_KEYS.MEETINGS, JSON.stringify(meetings));
-        } catch (e) {}
+        try { localStorage.setItem(STORAGE_KEYS.MEETINGS, JSON.stringify(meetings)); } catch (e) {}
       }, [meetings]);
+
+      useEffect(() => {
+        try { localStorage.setItem(STORAGE_KEYS.WORKFLOWS, JSON.stringify(workflows)); } catch (e) {}
+      }, [workflows]);
 
       // 모달 상태
       const [isManageModalOpen, setIsManageModalOpen] = useState(false);
@@ -189,6 +244,12 @@
 
       const [activeModalMeeting, setActiveModalMeeting] = useState(null);
       const [isEditingMeetingInfo, setIsEditingMeetingInfo] = useState(false);
+      const [showApiDocModal, setShowApiDocModal] = useState(false);
+
+      // 워크플로우 승인 완료 건수 카운트 (상단 뱃지용)
+      const approvedWfCount = useMemo(() => {
+        return workflows.filter(w => w.approvalStatus === 'approved').length;
+      }, [workflows]);
 
       // 필터링된 회의 목록
       const calendarMeetings = useMemo(() => {
@@ -211,7 +272,7 @@
         return map;
       }, [calendarMeetings]);
 
-      // 실시간 시계 관련 계산
+      // 실시간 시계 연동
       const curHour = now.getHours();
       const curMin = now.getMinutes();
       const curSec = now.getSeconds();
@@ -275,7 +336,53 @@
         };
       }, [meetings]);
 
-      // CRUD 핸들러
+      // --- 워크플로우 승인 회의 -> 캘린더 자동 등록 핸들러 ---
+      const handleImportWorkflowMeeting = (wf) => {
+        const newMeeting = {
+          id: `m-wf-${Date.now()}`,
+          wfId: wf.wfId,
+          title: wf.title,
+          startHour: wf.startHour,
+          startMin: wf.startMin || 0,
+          endHour: wf.endHour,
+          endMin: wf.endMin || 0,
+          date: wf.date,
+          team: wf.team,
+          interpreters: [], // 담당 통역사 미배정 상태로 인입 -> 배정창 연결
+          tag: '★전자결재승인',
+          isRecurring: false,
+          type: wf.reqType || 'simultaneous',
+          status: 'confirmed'
+        };
+
+        // 1. 캘린더 회의 목록에 자동 등록
+        setMeetings(prev => [...prev, newMeeting]);
+        // 2. 워크플로우 대기열에서 제거
+        setWorkflows(prev => prev.filter(w => w.wfId !== wf.wfId));
+        // 3. 해당 회의의 날짜로 이동 및 통역사 배정 모달 바로 열기
+        setSelectedDate(wf.date);
+        setCurrentTab('calendar');
+        setActiveModalMeeting(newMeeting);
+        setIsEditingMeetingInfo(false);
+
+        alert(`[${wf.wfId}] 승인 회의가 캘린더(${wf.date})에 자동 등록되었습니다!
+담당 통역사를 배정해주세요.`);
+      };
+
+      // 워크플로우 승인 상태 토글 (모의 테스트용)
+      const handleToggleWorkflowApproval = (wfId) => {
+        setWorkflows(prev => prev.map(w => {
+          if (w.wfId === wfId) {
+            return {
+              ...w,
+              approvalStatus: w.approvalStatus === 'approved' ? 'pending' : 'approved'
+            };
+          }
+          return w;
+        }));
+      };
+
+      // 회의 CRUD 핸들러
       const handleCreateNewMeeting = () => {
         const newMeeting = {
           id: `m-${Date.now()}`,
@@ -298,8 +405,7 @@
       };
 
       const handleDeleteMeeting = (id, title) => {
-        if (!confirm(`'${title}' 회의를 캘린더에서 완전히 삭제하시겠습니까?
-(로컬 저장소에 반영되어 새로고침해도 복원되지 않습니다)`)) return;
+        if (!confirm(`'${title}' 회의를 캘린더에서 완전히 삭제하시겠습니까?`)) return;
         setMeetings(prev => prev.filter(m => m.id !== id));
         setActiveModalMeeting(null);
         setIsEditingMeetingInfo(false);
@@ -381,8 +487,7 @@
       };
 
       const handleDeleteInterpreter = (id, code) => {
-        if (!confirm(`'【${code}】' 통역사를 정말 삭제하시겠습니까?
-(기존 회의 배정 내역에서도 제외됩니다)`)) return;
+        if (!confirm(`'【${code}】' 통역사를 정말 삭제하시겠습니까?`)) return;
         setInterpreters(prev => prev.filter(i => i.id !== id));
         setMeetings(prev => prev.map(m => ({
           ...m,
@@ -403,14 +508,12 @@
       };
 
       const handleResetToDefault = () => {
-        if (!confirm('초기 데모 데이터로 전체 초기화하시겠습니까? (직접 수정한 모든 회의/설정이 초기화됩니다)')) return;
-        localStorage.removeItem(STORAGE_KEYS.MEETINGS);
-        localStorage.removeItem(STORAGE_KEYS.TEAMS);
-        localStorage.removeItem(STORAGE_KEYS.INTERPRETERS);
-        setMeetings(INITIAL_MEETINGS);
+        if (!confirm('초기 데모 데이터로 복원하시겠습니까? (직접 등록한 회의가 초기화됩니다)')) return;
+        setMeetings([]);
+        setWorkflows(INITIAL_WORKFLOW_QUEUE);
         setTeams(INITIAL_TEAMS);
         setInterpreters(INITIAL_INTERPRETERS);
-        alert('초기 데이터로 복원되었습니다.');
+        alert('초기 설정으로 복원되었습니다.');
       };
 
       return (
@@ -427,16 +530,16 @@
                     InterpreBridge <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded font-medium">통역운영팀</span>
                   </h1>
                   <p className="text-xs text-slate-500">
-                    실시간 캘린더 & 통역사별 배분 통계 (로컬 영구저장 지원)
+                    전자결재 워크플로우 연동 캘린더 (총원 {interpreters.length}명)
                   </p>
                 </div>
               </div>
 
-              {/* 중앙 네비게이션: 데일리 캘린더 & 통계자료 */}
+              {/* 중앙 네비게이션: 3개 탭 */}
               <div className="flex items-center bg-slate-100 p-1 rounded-xl">
                 <button
                   onClick={() => setCurrentTab('calendar')}
-                  className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                  className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all ${
                     currentTab === 'calendar'
                       ? 'bg-white text-purple-700 shadow-sm'
                       : 'text-slate-600 hover:text-slate-900'
@@ -446,13 +549,28 @@
                 </button>
                 <button
                   onClick={() => setCurrentTab('analytics')}
-                  className={`px-4 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                  className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all ${
                     currentTab === 'analytics'
                       ? 'bg-white text-purple-700 shadow-sm'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   📊 통역사별 통계자료
+                </button>
+                <button
+                  onClick={() => setCurrentTab('workflow')}
+                  className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all relative flex items-center gap-1.5 ${
+                    currentTab === 'workflow'
+                      ? 'bg-white text-purple-700 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <span>📥 워크플로우 연동</span>
+                  {approvedWfCount > 0 && (
+                    <span className="bg-rose-500 text-white text-[10px] font-extrabold px-1.5 py-0.2 rounded-full animate-pulse">
+                      {approvedWfCount}
+                    </span>
+                  )}
                 </button>
               </div>
 
@@ -590,7 +708,7 @@
                         </span>
                       </h2>
                       <p className="text-xs text-slate-500">
-                        * 회의를 삭제/수정하면 <strong>브라우저 로컬 저장소에 즉시 반영</strong>되어 새로고침해도 복구되지 않습니다.
+                        * 워크플로우 승인 회의는 등록 시 <strong>★전자결재승인</strong> 태그와 함께 자동 배치됩니다.
                       </p>
                     </div>
 
@@ -612,9 +730,7 @@
                   <div className="relative border-l border-slate-200 ml-12">
                     {hours.map(hour => {
                       const hourMeetings = meetingsByHour[hour] || [];
-                      // 실시간 빨간색 바늘 표시 여부: 선택한 날짜가 오늘이고, 현재 시(hour)와 일치할 때
                       const isCurrentHourSlot = isViewingToday && (curHour === hour);
-                      // 현재 분에 맞춘 정밀 높이 (%)
                       const minutePercent = isCurrentHourSlot ? (curMin / 60) * 100 : 0;
 
                       return (
@@ -646,7 +762,7 @@
                                 {hourMeetings.map(meeting => {
                                   const teamMeta = teams[meeting.team] || teams.regular1;
                                   const isCancelled = meeting.status === 'cancelled';
-                                  const interpreterCodeStr = meeting.interpreters.length > 0 
+                                  const interpreterCodeStr = (meeting.interpreters && meeting.interpreters.length > 0)
                                     ? `【${meeting.interpreters.join('+')}】` 
                                     : '【미배정】';
                                   const timeRangeStr = `${String(meeting.startHour).padStart(2,'0')}:${String(meeting.startMin).padStart(2,'0')}`;
@@ -675,6 +791,8 @@
                                             <span className={`text-[10px] px-1 py-0.2 rounded border ${
                                               isCancelled 
                                                 ? 'bg-rose-100 border-rose-200 text-rose-700 font-bold' 
+                                                : meeting.tag.includes('전자결재')
+                                                ? 'bg-indigo-100 border-indigo-200 text-indigo-800 font-bold'
                                                 : 'bg-white/70 border-slate-300 text-slate-700 font-normal'
                                             }`}>
                                               {meeting.tag}
@@ -718,8 +836,29 @@
                   </div>
                 </div>
 
-                {/* 우측 1열: 통역사 20명 명단 & 상태 */}
+                {/* 우측 1열: 통역사 20명 명단 & 워크플로우 퀵 링크 */}
                 <div className="space-y-4">
+                  {/* 워크플로우 승인 대기 알림 배너 */}
+                  {approvedWfCount > 0 && (
+                    <div className="bg-gradient-to-r from-purple-600 to-indigo-600 rounded-2xl p-4 text-white shadow-md">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold text-purple-100">결재 승인 건 인입</span>
+                        <span className="bg-white text-purple-700 text-[10px] font-extrabold px-2 py-0.5 rounded-full">
+                          {approvedWfCount}건 대기
+                        </span>
+                      </div>
+                      <p className="text-xs text-purple-100 mb-3 leading-snug">
+                        사내 워크플로우에서 결재 승인된 회의를 즉시 캘린더에 등록할 수 있습니다.
+                      </p>
+                      <button
+                        onClick={() => setCurrentTab('workflow')}
+                        className="w-full py-1.5 bg-white/90 hover:bg-white text-purple-700 rounded-lg text-xs font-bold transition shadow-sm"
+                      >
+                        승인 회의 캘린더로 가져오기 →
+                      </button>
+                    </div>
+                  )}
+
                   <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
                     <div className="flex items-center justify-between mb-3">
                       <h3 className="text-sm font-bold text-slate-900">
@@ -780,7 +919,6 @@
                     })}
                   </div>
 
-                  {/* 데이터 백업/초기화 안내 카드 */}
                   <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4 text-xs text-slate-600 space-y-2">
                     <div className="font-bold text-slate-800 flex items-center justify-between">
                       <span>💾 브라우저 로컬 저장 안내</span>
@@ -833,7 +971,7 @@
                   </div>
                 </div>
 
-                {/* 통역사 20명 업무 배분 통계 테이블 & 차트 바 */}
+                {/* 통역사 20명 업무 배분 통계 테이블 */}
                 <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
                   <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
                     <div>
@@ -844,12 +982,8 @@
                         등록된 모든 확정 회의를 기준으로 통역사별 배정 시간과 회의 수를 실시간 산출합니다.
                       </p>
                     </div>
-                    <div className="text-xs text-slate-500">
-                      * 40시간 기준 업무량 시각화 (높은 순 정렬)
-                    </div>
                   </div>
 
-                  {/* 통계 테이블 */}
                   <div className="overflow-x-auto border border-slate-200 rounded-xl mb-6">
                     <table className="w-full text-left text-xs">
                       <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
@@ -915,7 +1049,6 @@
                     </table>
                   </div>
 
-                  {/* 팀별 총합 비교 카드 3종 */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {['regular1', 'regular2', 'urgent'].map(teamKey => {
                       const meta = teams[teamKey];
@@ -947,7 +1080,142 @@
                       );
                     })}
                   </div>
+                </div>
 
+              </div>
+            )}
+
+            {/* [탭 3] 사내 워크플로우(전자결재) 연동 인터페이스 */}
+            {currentTab === 'workflow' && (
+              <div className="space-y-6">
+                
+                {/* 헤더 & API 스펙 가이드 링크 */}
+                <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200">
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">
+                          사내 결재 시스템 연계
+                        </span>
+                        <span className="text-xs text-slate-400">자동 승인 인입 큐(Queue)</span>
+                      </div>
+                      <h2 className="text-lg font-bold text-slate-900">
+                        전자결재 승인 회의 인입 대기열
+                      </h2>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        사내 워크플로우를 통해 승인 처리된 회의를 원클릭으로 캘린더에 자동 등록하고 통역사를 배정합니다.
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() => setShowApiDocModal(true)}
+                      className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+                    >
+                      <span>⚙️ IT개발팀 연동 REST API 규격서</span>
+                    </button>
+                  </div>
+
+                  {/* 승인 대기열 목록 */}
+                  <div className="mt-5 space-y-3">
+                    {workflows.length === 0 ? (
+                      <div className="py-12 text-center text-slate-400 text-xs">
+                        현재 대기 중인 워크플로우 의뢰가 없습니다.
+                      </div>
+                    ) : (
+                      workflows.map(wf => {
+                        const meta = teams[wf.team] || teams.regular1;
+                        const isApproved = wf.approvalStatus === 'approved';
+
+                        return (
+                          <div
+                            key={wf.wfId}
+                            className={`border rounded-xl p-4 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                              isApproved 
+                                ? 'bg-white border-indigo-200 shadow-sm hover:border-indigo-400' 
+                                : 'bg-slate-50 border-slate-200 opacity-70'
+                            }`}
+                          >
+                            {/* 좌측 상세 정보 */}
+                            <div className="space-y-1.5">
+                              <div className="flex items-center flex-wrap gap-2 text-xs">
+                                <span className="font-mono font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded border border-slate-200">
+                                  {wf.wfId}
+                                </span>
+                                <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${meta.badgeBg}`}>
+                                  {meta.name}
+                                </span>
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                                  isApproved ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'
+                                }`}>
+                                  {isApproved ? '● 결재 승인완료' : '○ 결재 진행중'}
+                                </span>
+                                <span className="text-slate-400 text-[11px]">의뢰시각: {wf.requestedAt}</span>
+                              </div>
+
+                              <h4 className="text-sm font-bold text-slate-900">{wf.title}</h4>
+
+                              <div className="text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
+                                <span>📅 회의일시: <strong className="text-slate-700">{wf.date} ({wf.timeStr})</strong></span>
+                                <span>🏢 신청부서: <strong className="text-slate-700">{wf.dept}</strong> ({wf.requester})</span>
+                                <span>🎙 요청형태: <strong className="text-slate-700">{wf.reqType === 'simultaneous' ? '동시통역' : '순차통역'}</strong></span>
+                              </div>
+                            </div>
+
+                            {/* 우측 액션 버튼 */}
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <button
+                                onClick={() => handleToggleWorkflowApproval(wf.wfId)}
+                                title="상태 모의 전환"
+                                className="text-[11px] px-2.5 py-1.5 rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-100 transition"
+                              >
+                                {isApproved ? '결재상태 취소' : '승인완료로 변경'}
+                              </button>
+
+                              <button
+                                onClick={() => handleImportWorkflowMeeting(wf)}
+                                disabled={!isApproved}
+                                className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-sm ${
+                                  isApproved
+                                    ? 'bg-purple-600 hover:bg-purple-700 text-white cursor-pointer'
+                                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                                }`}
+                              >
+                                <span>✓ 캘린더 자동 등록 & 통역사 배정</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* 워크플로우 연동 안내 카드 */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm text-xs space-y-2">
+                    <h3 className="font-bold text-slate-900 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-purple-600"></span>
+                      사내 시스템 연동 프로세스
+                    </h3>
+                    <ol className="list-decimal list-inside space-y-1 text-slate-600 leading-relaxed pl-1">
+                      <li>사내 인트라넷/전자결재에서 통역 의뢰 품의 상신</li>
+                      <li>주관 부서장 최종 <strong>승인(Approved)</strong> 시 웹훅(Webhook) 즉시 발송</li>
+                      <li>InterpreBridge 대기열로 인입되어 <strong>"캘린더 자동 등록"</strong> 원클릭 지원</li>
+                      <li>통역팀 관리자가 통역사 배정 완료 시 사내 시스템으로 상태 자동 콜백 가능</li>
+                    </ol>
+                  </div>
+
+                  <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm text-xs space-y-2">
+                    <h3 className="font-bold text-slate-900 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
+                      향후 자동화 확장 기능
+                    </h3>
+                    <ul className="list-disc list-inside space-y-1 text-slate-600 leading-relaxed pl-1">
+                      <li><strong>완전 무인 자동 등록:</strong> 승인 완료와 동시에 캘린더에 즉시 자동 생성</li>
+                      <li><strong>스마트 추천 배정:</strong> 팀별 누적 시간 및 가용 여부를 체크해 통역사 자동 추천</li>
+                      <li><strong>메신저 자동 알림:</strong> 슬랙/팀즈로 담당 통역사에게 배정 회의 푸시 발송</li>
+                    </ul>
+                  </div>
                 </div>
 
               </div>
@@ -970,6 +1238,11 @@
                       {activeModalMeeting.status === 'cancelled' && (
                         <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-rose-100 text-rose-700">
                           취소된 회의
+                        </span>
+                      )}
+                      {activeModalMeeting.wfId && (
+                        <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-indigo-700">
+                          {activeModalMeeting.wfId}
                         </span>
                       )}
                     </div>
@@ -1130,7 +1403,7 @@
                       <div className="text-[11px] text-slate-500 mb-3">
                         * 선택된 통역사: {activeModalMeeting.interpreters.length > 0 
                           ? activeModalMeeting.interpreters.map(c => `【${c}】`).join(' ') 
-                          : '없음 (미배정)'}
+                          : '없음 (미배정 상태)'}
                       </div>
 
                       <div className="max-h-52 overflow-y-auto space-y-3 pr-1">
@@ -1434,6 +1707,63 @@
                     className="px-5 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold shadow-sm"
                   >
                     설정 닫기
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 6. REST API Webhook 연동 규격서 모달 */}
+          {showApiDocModal && (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl border border-slate-100 max-h-[85vh] flex flex-col">
+                <div className="flex justify-between items-center pb-3 border-b border-slate-200">
+                  <h3 className="text-base font-bold text-slate-900">
+                    사내 전자결재(Workflow) Webhook 연동 규격서
+                  </h3>
+                  <button onClick={() => setShowApiDocModal(false)} className="text-slate-400 hover:text-slate-600 font-bold text-lg">
+                    ✕
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto py-3 space-y-3 text-xs">
+                  <p className="text-slate-600 leading-relaxed">
+                    사내 전자결재 시스템에서 주관 부서장의 최종 승인(Approved) 이벤트 발생 시, 
+                    아래 규격의 JSON 데이터를 지정 엔드포인트로 POST 전송하면 캘린더에 자동 인입됩니다.
+                  </p>
+
+                  <div className="bg-slate-900 text-slate-100 p-4 rounded-xl font-mono text-[11px] leading-relaxed overflow-x-auto">
+                    <div className="text-emerald-400 font-bold mb-1">// POST /api/v1/interprebridge/webhook</div>
+                    {`{
+  "event": "WORKFLOW_APPROVAL_COMPLETED",
+  "workflow_id": "WF-20261111-091",
+  "meeting_title": "[긴급/임원보고] C-Level 한일 비상 전략회의",
+  "department": "경영전략실",
+  "requester_name": "최성훈 수석",
+  "assigned_team": "urgent", // "regular1" | "regular2" | "urgent"
+  "interpretation_type": "simultaneous", // "simultaneous" | "consecutive"
+  "meeting_date": "2026-11-11",
+  "start_hour": 16,
+  "start_minute": 0,
+  "end_hour": 17,
+  "end_minute": 30,
+  "approved_at": "2026-11-11T14:10:00+09:00"
+}`}
+                  </div>
+
+                  <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3 text-[11px] text-indigo-900 space-y-1">
+                    <div className="font-bold">연동 시 장점:</div>
+                    <div>• 결재 승인 즉시 캘린더 대기열로 인입되어 통역팀이 일정을 누락하지 않고 관리할 수 있습니다.</div>
+                    <div>• 추후 통역사 배정이 확정되었을 때 사내 인트라넷으로 담당자 배정 완료 역알림(Callback)을 보낼 수 있습니다.</div>
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-slate-200 flex justify-end">
+                  <button
+                    onClick={() => setShowApiDocModal(false)}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-xl text-xs font-bold shadow-sm"
+                  >
+                    확인 완료
                   </button>
                 </div>
               </div>
